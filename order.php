@@ -15,20 +15,48 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $room_id = (int)($_POST['room_id'] ?? 0);
 
     $nameRe = '/^[А-Яа-яЁё\s\-]+$/u';
+    $today = date('Y-m-d');
 
     if (!preg_match($nameRe, $first_name)) $errors[] = 'Некорректное имя';
     if (!preg_match($nameRe, $last_name)) $errors[] = 'Некорректная фамилия';
     if (!preg_match('/^\+?\d[\d\s\-\(\)]{9,}$/', $phone)) $errors[] = 'Некорректный телефон';
     if (!filter_var($email, FILTER_VALIDATE_EMAIL)) $errors[] = 'Некорректный email';
     if (!$date_in || !$date_out) $errors[] = 'Укажите даты заезда и выезда';
+    if ($date_in && $date_in < $today) $errors[] = 'Дата заезда не может быть раньше сегодняшнего дня';
     if ($date_in && $date_out && $date_in >= $date_out) $errors[] = 'Дата выезда должна быть позже даты заезда';
     if (!$room_id) $errors[] = 'Не выбран номер';
+
+    if (empty($errors) && $room_id && $date_in && $date_out) {
+        $stmt = $pdo->prepare("
+            SELECT COUNT(*) FROM bookings 
+            WHERE room_id = ? AND status = 'Одобрена' 
+            AND date_in < ? AND date_out > ?
+        ");
+        $stmt->execute([$room_id, $date_out, $date_in]);
+        if ($stmt->fetchColumn() > 0) {
+            $errors[] = 'Этот номер уже забронирован на выбранные даты';
+        }
+    }
 
     if (empty($errors)) {
         $stmt = $pdo->prepare("INSERT INTO bookings (room_id, last_name, first_name, phone, email, date_in, date_out) VALUES (?, ?, ?, ?, ?, ?, ?)");
         $stmt->execute([$room_id, $last_name, $first_name, $phone, $email, $date_in, $date_out]);
         $success = true;
     }
+}
+
+$roomInfo = null;
+if ($room_id) {
+    $stmt = $pdo->prepare("SELECT category, price FROM rooms WHERE id = ?");
+    $stmt->execute([$room_id]);
+    $roomInfo = $stmt->fetch();
+}
+
+$bookedRanges = [];
+if ($room_id) {
+    $stmt = $pdo->prepare("SELECT date_in, date_out FROM bookings WHERE room_id = ? AND status = 'Одобрена'");
+    $stmt->execute([$room_id]);
+    $bookedRanges = $stmt->fetchAll();
 }
 ?>
 <!doctype html>
@@ -69,10 +97,27 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 </div>
 <?php endif; ?>
 
+<?php if ($roomInfo && !empty($bookedRanges)): ?>
+<div class="alert alert-warning">
+    На выбранную комнату (<?= htmlspecialchars($roomInfo['category']) ?>) уже есть подтверждённое бронирование на следующие даты:
+    <ul class="mb-0">
+        <?php foreach ($bookedRanges as $range): ?>
+            <li><?= htmlspecialchars($range['date_in']) ?> — <?= htmlspecialchars($range['date_out']) ?></li>
+        <?php endforeach; ?>
+    </ul>
+</div>
+<?php endif; ?>
+
 <main>
     <div class="d-flex justify-content-between flex-wrap align-items-center">
         <h1>Бронирование номера</h1>
     </div>
+
+    <?php if ($roomInfo): ?>
+    <div class="alert alert-info">
+        Вы бронируете: <strong><?= htmlspecialchars($roomInfo['category']) ?></strong>, <?= (int)$roomInfo['price'] ?> ₽/сутки
+    </div>
+    <?php endif; ?>
 
     <form class="row g-3 my-2" method="post">
         <input type="hidden" name="room_id" value="<?= (int)$room_id ?>">
@@ -94,11 +139,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         </div>
         <div class="col-md-3">
             <label for="date_in" class="form-label">Дата заезда</label>
-            <input type="date" class="form-control" id="date_in" name="date_in" required>
+            <input type="date" class="form-control" id="date_in" name="date_in" min="<?= date('Y-m-d') ?>" required>
         </div>
         <div class="col-md-3">
             <label for="date_out" class="form-label">Дата выезда</label>
-            <input type="date" class="form-control" id="date_out" name="date_out" required>
+            <input type="date" class="form-control" id="date_out" name="date_out" min="<?= date('Y-m-d') ?>" required>
         </div>
         <div class="d-grid gap-2">
             <button class="btn btn-primary" type="submit">Отправить заявку</button>
